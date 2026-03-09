@@ -100,11 +100,15 @@ Add to `.gitlab-ci.yml` in your repository:
 ```yaml
 gitleaks:
   stage: test
-  image: ghcr.io/califio/rediver-gitleaks:latest
+  image:
+    name: ghcr.io/califio/rediver-gitleaks:latest
+    entrypoint: [""]
   variables:
     REDIVER_TOKEN: $REDIVER_TOKEN
     MODE: ci
     FULL_HISTORY: "false"
+  script:
+    - /usr/bin/rediver-gitleaks
   rules:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
@@ -115,10 +119,14 @@ To scan full history only on the default branch:
 ```yaml
 gitleaks:
   stage: test
-  image: ghcr.io/califio/rediver-gitleaks:latest
+  image:
+    name: ghcr.io/califio/rediver-gitleaks:latest
+    entrypoint: [""]
   variables:
     REDIVER_TOKEN: $REDIVER_TOKEN
     MODE: ci
+  script:
+    - /usr/bin/rediver-gitleaks
   rules:
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
       variables:

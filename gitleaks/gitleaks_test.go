@@ -26,7 +26,7 @@ func TestToSASTFinding_WithCommit(t *testing.T) {
 		Commit:      "abc123def456789",
 	}
 
-	result := toSASTFinding(f)
+	result := toSASTFinding(f, 0)
 
 	if result.Name != "Generic API Key" {
 		t.Errorf("Name = %q, want %q", result.Name, "Generic API Key")
@@ -72,7 +72,7 @@ func TestToSASTFinding_WithoutCommit(t *testing.T) {
 		Commit:      "",
 	}
 
-	result := toSASTFinding(f)
+	result := toSASTFinding(f, 0)
 
 	if result.Description != "AWS Access Key" {
 		t.Errorf("Description = %q, want %q", result.Description, "AWS Access Key")
@@ -91,7 +91,7 @@ func TestToSASTFinding_ShortCommit(t *testing.T) {
 		Commit:      "abc123", // 6 chars, <= 8
 	}
 
-	result := toSASTFinding(f)
+	result := toSASTFinding(f, 0)
 
 	if result.Description != "Token (commit: abc123)" {
 		t.Errorf("Description = %q, want %q", result.Description, "Token (commit: abc123)")
@@ -198,6 +198,11 @@ func TestScanCommitRange(t *testing.T) {
 		t.Fatal("expected at least 1 finding in commit range, got 0")
 	}
 
+	// CommitSha should be the HEAD commit SHA
+	if findings[0].CommitSha != headSHA {
+		t.Errorf("CommitSha = %q, want HEAD SHA %q", findings[0].CommitSha, headSHA)
+	}
+
 	// Scan with same base and head — empty range, should find nothing
 	findingsClean, err := Scan(context.Background(), logger, dir, Options{
 		BaseCommitSHA: baseSHA,
@@ -208,5 +213,65 @@ func TestScanCommitRange(t *testing.T) {
 	}
 	if len(findingsClean) != 0 {
 		t.Errorf("expected 0 findings for empty range, got %d", len(findingsClean))
+	}
+}
+
+func TestScanCommitRange_SecretRemovedInLaterCommit(t *testing.T) {
+	dir, runGit := initTestRepo(t)
+
+	// Base commit — clean
+	if err := os.WriteFile(filepath.Join(dir, "clean.txt"), []byte("hello\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	runGit("add", ".")
+	runGit("commit", "-m", "base commit")
+	baseSHA := runGit("rev-parse", "HEAD")
+
+	// Commit 1 — introduce a secret
+	if err := os.WriteFile(filepath.Join(dir, "config.env"), []byte("AWS_ACCESS_KEY_ID=AKIAZ7V5RCJQ42WRGX4D\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	runGit("add", ".")
+	runGit("commit", "-m", "add secret")
+
+	// Commit 2 — remove the secret
+	if err := os.WriteFile(filepath.Join(dir, "config.env"), []byte("AWS_ACCESS_KEY_ID=\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	runGit("add", ".")
+	runGit("commit", "-m", "remove secret")
+	headSHA := runGit("rev-parse", "HEAD")
+
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	// Secret was added then removed — should report 0 findings
+	findings, err := Scan(context.Background(), logger, dir, Options{
+		BaseCommitSHA: baseSHA,
+		HeadCommitSHA: headSHA,
+	})
+	if err != nil {
+		t.Fatalf("Scan() error: %v", err)
+	}
+	if len(findings) != 0 {
+		t.Errorf("expected 0 findings (secret removed at HEAD), got %d", len(findings))
+	}
+}
+
+func TestRedactSecret(t *testing.T) {
+	tests := []struct {
+		secret string
+		pct    uint
+		want   string
+	}{
+		{"AKIAIOSFODNN7EXAMPLE", 20, "AKIAIOSFODNN7EXA****"},
+		{"short", 20, "shor*"},
+		{"ab", 50, "a*"},
+		{"x", 50, "*"},
+	}
+	for _, tt := range tests {
+		got := redactSecret(tt.secret, tt.pct)
+		if got != tt.want {
+			t.Errorf("redactSecret(%q, %d) = %q, want %q", tt.secret, tt.pct, got, tt.want)
+		}
 	}
 }

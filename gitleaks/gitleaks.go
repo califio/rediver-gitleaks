@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 
 	"github.com/califio/rediver-sdk-go"
 	"github.com/zricethezav/gitleaks/v8/detect"
@@ -50,40 +52,59 @@ func Scan(ctx context.Context, log *slog.Logger, repoPath string, opts Options) 
 		detector.Verbose = true
 		detector.NoColor = false
 	}
-	if opts.RedactPct > 0 {
-		detector.Redact = opts.RedactPct
-	}
+	// Keep Redact=0 so f.Secret contains raw value for PR/MR filtering.
+	// Redaction is applied manually in toSASTFinding.
 
-	// Determine scan scope:
-	// 1. PR/MR diff range (base..head) takes priority when both commits are available
-	// 2. Full history scans all commits
-	// 3. Default: scan only HEAD commit
-	var logOpts string
-	switch {
-	case opts.BaseCommitSHA != "" && opts.HeadCommitSHA != "":
-		logOpts = fmt.Sprintf("%s..%s", opts.BaseCommitSHA, opts.HeadCommitSHA)
-		log.Info("scanning PR/MR commit range", "base", opts.BaseCommitSHA[:minLen(opts.BaseCommitSHA, 8)], "head", opts.HeadCommitSHA[:minLen(opts.HeadCommitSHA, 8)])
-	case opts.FullHistory:
-		logOpts = ""
-	default:
-		logOpts = "-1"
-	}
-	gitCmd, err := sources.NewGitLogCmdContext(ctx, absPath, logOpts)
-	if err != nil {
-		return nil, fmt.Errorf("create git source: %w", err)
-	}
+	isPRScan := opts.BaseCommitSHA != "" && opts.HeadCommitSHA != ""
 
-	// Remote must be non-nil to prevent nil pointer panic in gitleaks' createScmLink (v8.30.0).
-	gitSource := &sources.Git{
-		Cmd:    gitCmd,
-		Config: &detector.Config,
-		Sema:   detector.Sema,
-		Remote: &sources.RemoteInfo{},
-	}
+	var findings []report.Finding
+	if isPRScan {
+		log.Info("scanning PR/MR changed files at HEAD",
+			"base", opts.BaseCommitSHA[:minLen(opts.BaseCommitSHA, 8)],
+			"head", opts.HeadCommitSHA[:minLen(opts.HeadCommitSHA, 8)])
 
-	findings, err := detector.DetectSource(ctx, gitSource)
-	if err != nil {
-		return nil, fmt.Errorf("gitleaks detection failed: %w", err)
+		changedFiles, err := gitDiffFileList(ctx, absPath, opts.BaseCommitSHA, opts.HeadCommitSHA)
+		if err != nil {
+			return nil, fmt.Errorf("list changed files: %w", err)
+		}
+		if len(changedFiles) == 0 {
+			log.Info("no changed files in range")
+			return nil, nil
+		}
+		log.Info("changed files", "count", len(changedFiles))
+
+		source := &gitChangedFilesSource{
+			repoPath:  absPath,
+			headSHA:   opts.HeadCommitSHA,
+			files:     changedFiles,
+		}
+		findings, err = detector.DetectSource(ctx, source)
+		if err != nil {
+			return nil, fmt.Errorf("gitleaks detection failed: %w", err)
+		}
+	} else {
+		var logOpts string
+		if opts.FullHistory {
+			logOpts = ""
+		} else {
+			logOpts = "-1"
+		}
+		gitCmd, err := sources.NewGitLogCmdContext(ctx, absPath, logOpts)
+		if err != nil {
+			return nil, fmt.Errorf("create git source: %w", err)
+		}
+
+		gitSource := &sources.Git{
+			Cmd:    gitCmd,
+			Config: &detector.Config,
+			Sema:   detector.Sema,
+			Remote: &sources.RemoteInfo{},
+		}
+
+		findings, err = detector.DetectSource(ctx, gitSource)
+		if err != nil {
+			return nil, fmt.Errorf("gitleaks detection failed: %w", err)
+		}
 	}
 
 	if len(findings) == 0 {
@@ -92,7 +113,7 @@ func Scan(ctx context.Context, log *slog.Logger, repoPath string, opts Options) 
 
 	results := make([]rediver.SASTFinding, 0, len(findings))
 	for _, f := range findings {
-		results = append(results, toSASTFinding(f))
+		results = append(results, toSASTFinding(f, opts.RedactPct))
 	}
 	return results, nil
 }
@@ -104,7 +125,69 @@ func minLen(s string, n int) int {
 	return n
 }
 
-func toSASTFinding(f report.Finding) rediver.SASTFinding {
+// gitDiffFileList returns the list of added/changed/modified/renamed files between two commits.
+func gitDiffFileList(ctx context.Context, repoPath, base, head string) ([]string, error) {
+	cmd := exec.CommandContext(ctx, "git", "diff", "--name-only", "--diff-filter=ACMR", base, head)
+	cmd.Dir = repoPath
+	out, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("git diff --name-only: %w", err)
+	}
+	raw := strings.TrimSpace(string(out))
+	if raw == "" {
+		return nil, nil
+	}
+	return strings.Split(raw, "\n"), nil
+}
+
+// gitChangedFilesSource implements sources.Source by reading changed files at a specific commit.
+type gitChangedFilesSource struct {
+	repoPath string
+	headSHA  string
+	files    []string
+}
+
+func (s *gitChangedFilesSource) Fragments(ctx context.Context, yield sources.FragmentsFunc) error {
+	for _, filePath := range s.files {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+
+		content, err := gitShowFile(ctx, s.repoPath, s.headSHA, filePath)
+		if err != nil {
+			// File may have been deleted or is binary — skip
+			continue
+		}
+
+		fragment := sources.Fragment{
+			Raw:       content,
+			FilePath:  filePath,
+			CommitSHA: s.headSHA,
+		}
+		if err := yield(fragment, nil); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func gitShowFile(ctx context.Context, repoPath, ref, filePath string) (string, error) {
+	cmd := exec.CommandContext(ctx, "git", "show", ref+":"+filePath)
+	cmd.Dir = repoPath
+	out, err := cmd.Output()
+	if err != nil {
+		return "", err
+	}
+	return string(out), nil
+}
+
+func toSASTFinding(f report.Finding, redactPct uint) rediver.SASTFinding {
+	snippet := f.Match
+	if redactPct > 0 && f.Secret != "" {
+		redacted := redactSecret(f.Secret, redactPct)
+		snippet = strings.Replace(snippet, f.Secret, redacted, 1)
+	}
+
 	description := f.Description
 	if f.Commit != "" {
 		commitShort := f.Commit
@@ -121,9 +204,18 @@ func toSASTFinding(f report.Finding) rediver.SASTFinding {
 		File:        f.File,
 		StartLine:   f.StartLine,
 		EndLine:     f.EndLine,
-		Snippet:     f.Match,
+		Snippet:     snippet,
 		Category:    "Hardcoded Secret",
 		RuleID:      f.RuleID,
 		CommitSha:   f.Commit,
 	}
+}
+
+// redactSecret replaces the last N% of a secret with asterisks.
+func redactSecret(secret string, pct uint) string {
+	n := len(secret) * int(pct) / 100
+	if n < 1 {
+		n = 1
+	}
+	return secret[:len(secret)-n] + strings.Repeat("*", n)
 }
