@@ -1,4 +1,4 @@
-FROM golang:1.24-bookworm AS build
+FROM golang:1.25-bookworm AS build
 # install dependencies
 RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
     git \
@@ -10,7 +10,8 @@ RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-ins
 WORKDIR /go/src/app
 ENV CGO_ENABLED=0 GOOS=linux
 COPY . .
-RUN PATH_TO_MODULE=`go list -m` && go build -o /go/bin/rediver-gitleaks
+ARG VERSION=dev
+RUN go build -ldflags "-X main.Version=${VERSION}" -o /go/bin/rediver-gitleaks
 
 FROM bitnami/minideb:bookworm AS final
 RUN install_packages \

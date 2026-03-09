@@ -1,11 +1,11 @@
-module gitlab.com/califengineering/rediver/rediver-gitleaks
+module github.com/califio/rediver-gitleaks
 
 go 1.25.4
 
 require (
 	github.com/alecthomas/kong v1.12.1
+	github.com/califio/rediver-sdk-go v1.0.0
 	github.com/joho/godotenv v1.5.1
-	github.com/rs/zerolog v1.34.0
 	github.com/zricethezav/gitleaks/v8 v8.30.0
 )
 
@@ -22,7 +22,6 @@ require (
 	github.com/bodgit/plumbing v1.3.0 // indirect
 	github.com/bodgit/sevenzip v1.6.0 // indirect
 	github.com/bodgit/windows v1.0.1 // indirect
-	github.com/califio/rediver-sdk-go v1.0.0 // indirect
 	github.com/charmbracelet/lipgloss v0.5.0 // indirect
 	github.com/dsnet/compress v0.0.2-0.20230904184137-39efe44ab707 // indirect
 	github.com/fatih/semgroup v1.2.0 // indirect
@@ -55,6 +54,7 @@ require (
 	github.com/pelletier/go-toml/v2 v2.2.3 // indirect
 	github.com/pierrec/lz4/v4 v4.1.21 // indirect
 	github.com/rivo/uniseg v0.2.0 // indirect
+	github.com/rs/zerolog v1.34.0 // indirect
 	github.com/sagikazarmark/locafero v0.7.0 // indirect
 	github.com/sagikazarmark/slog-shim v0.1.0 // indirect
 	github.com/shopspring/decimal v1.4.0 // indirect

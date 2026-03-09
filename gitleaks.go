@@ -3,7 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
-	"gitlab.com/califengineering/rediver/rediver-gitleaks/gitleaks"
+	"github.com/califio/rediver-gitleaks/gitleaks"
 
 	"github.com/califio/rediver-sdk-go"
 )
@@ -12,6 +12,8 @@ import (
 type GitleaksDefaults struct {
 	FullHistory bool
 	Verbose     bool
+	BaseCommit  string
+	HeadCommit  string
 }
 
 // NewGitleaksScanner creates a scanner for secret detection using gitleaks.
@@ -19,7 +21,7 @@ func NewGitleaksScanner(defaults GitleaksDefaults) rediver.Scanner {
 	return rediver.NewScanner(
 		"gitleaks",
 		[]rediver.TargetType{rediver.TargetTypeRepository},
-		gitleaksHandler,
+		gitleaksHandler(defaults),
 		rediver.WithParam(rediver.BoolParam("full_history").
 			Label("Full History Scan").
 			Description("Scan all git commits instead of only the HEAD commit").
@@ -33,40 +35,52 @@ func NewGitleaksScanner(defaults GitleaksDefaults) rediver.Scanner {
 	)
 }
 
-func gitleaksHandler(ctx context.Context, job rediver.Job, emit func(rediver.Result)) error {
-	log := job.Logger()
+func gitleaksHandler(defaults GitleaksDefaults) rediver.ScanFunc {
+	return func(ctx context.Context, job rediver.Job, emit func(rediver.Result)) error {
+		log := job.Logger()
 
-	repoDir := job.RepoDir()
-	if repoDir == "" {
-		return fmt.Errorf("no repository available")
-	}
+		repoDir := job.RepoDir()
+		if repoDir == "" {
+			return fmt.Errorf("no repository available")
+		}
 
-	var fullHistory bool
-	if p := job.Param("full_history"); p != nil {
-		fullHistory = p.Bool()
-	}
-	var verbose bool
-	if p := job.Param("verbose"); p != nil {
-		verbose = p.Bool()
-	}
-	log.Info("scanning repository", "path", repoDir, "fullHistory", fullHistory, "verbose", verbose)
+		var fullHistory bool
+		if p := job.Param("full_history"); p != nil {
+			fullHistory = p.Bool()
+		}
+		var verbose bool
+		if p := job.Param("verbose"); p != nil {
+			verbose = p.Bool()
+		}
+		log.Info("scanning repository", "path", repoDir, "fullHistory", fullHistory, "verbose", verbose)
 
-	opts := gitleaks.Options{
-		FullHistory: fullHistory,
-		Verbose:     verbose,
-		RedactPct:   20,
-	}
-	findings, err := gitleaks.Scan(ctx, log, repoDir, opts)
-	if err != nil {
-		return fmt.Errorf("scan error: %w", err)
-	}
+		opts := gitleaks.Options{
+			FullHistory: fullHistory,
+			Verbose:     verbose,
+			RedactPct:   20,
+		}
 
-	if len(findings) == 0 {
-		log.Info("no secrets found")
+		// Use commit range for PR/MR scans: SDK context first, CLI fallback
+		if repo, ok := job.Repository(); ok && repo.BaseCommitSHA != "" {
+			opts.BaseCommitSHA = repo.BaseCommitSHA
+			opts.HeadCommitSHA = repo.CommitSHA
+		} else if defaults.BaseCommit != "" {
+			opts.BaseCommitSHA = defaults.BaseCommit
+			opts.HeadCommitSHA = defaults.HeadCommit
+		}
+
+		findings, err := gitleaks.Scan(ctx, log, repoDir, opts)
+		if err != nil {
+			return fmt.Errorf("scan error: %w", err)
+		}
+
+		if len(findings) == 0 {
+			log.Info("no secrets found")
+			return nil
+		}
+
+		log.Info("secrets found", "count", len(findings))
+		emit(rediver.SASTFindings(findings...))
 		return nil
 	}
-
-	log.Info("secrets found", "count", len(findings))
-	emit(rediver.SASTFindings(findings...))
-	return nil
 }

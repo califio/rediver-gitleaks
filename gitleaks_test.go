@@ -84,7 +84,7 @@ func TestGitleaksHandler_ScanRediverSDK(t *testing.T) {
 	var results []rediver.Result
 	emit := func(r rediver.Result) { results = append(results, r) }
 
-	err = gitleaksHandler(context.Background(), job, emit)
+	err = gitleaksHandler(GitleaksDefaults{})(context.Background(), job, emit)
 	if err != nil {
 		t.Fatalf("gitleaksHandler error: %v", err)
 	}
@@ -100,7 +100,7 @@ func TestGitleaksHandler_NoRepoDir(t *testing.T) {
 	var results []rediver.Result
 	emit := func(r rediver.Result) { results = append(results, r) }
 
-	err := gitleaksHandler(context.Background(), job, emit)
+	err := gitleaksHandler(GitleaksDefaults{})(context.Background(), job, emit)
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}

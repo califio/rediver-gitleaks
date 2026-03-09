@@ -9,16 +9,11 @@ on:
 
 env:
   REGISTRY: ghcr.io
-  # GitHub repository reference (e.g., username/repo-name)
   IMAGE_NAME: ${{ github.repository }}
 
 jobs:
-  build-and-push:
+  test:
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write
-
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -26,10 +21,24 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.24'
+          go-version: '1.25'
 
       - name: Run unit tests
         run: go test -v ./...
+
+  build-and-push:
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      packages: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
@@ -52,13 +61,68 @@ jobs:
             type=semver,pattern={{major}}.{{minor}}
             type=semver,pattern={{major}}
 
+      - name: Extract version
+        id: version
+        run: |
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            echo "value=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
+          else
+            echo "value=dev-${GITHUB_SHA::7}" >> $GITHUB_OUTPUT
+          fi
+
       - name: Build and push Docker image
         uses: docker/build-push-action@v6
         with:
           context: .
           file: ./Dockerfile
           push: true
+          platforms: linux/amd64,linux/arm64
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          build-args: VERSION=${{ steps.version.outputs.value }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+  release:
+    needs: build-and-push
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Generate changelog
+        id: changelog
+        run: |
+          # Get previous tag
+          PREV_TAG=$(git tag --sort=-version:refname | head -n 2 | tail -n 1)
+          CURRENT_TAG=${GITHUB_REF#refs/tags/}
+
+          if [ -z "$PREV_TAG" ] || [ "$PREV_TAG" = "$CURRENT_TAG" ]; then
+            # First release — all commits
+            CHANGELOG=$(git log --pretty=format:"- %s (%h)" HEAD)
+          else
+            CHANGELOG=$(git log --pretty=format:"- %s (%h)" ${PREV_TAG}..${CURRENT_TAG})
+          fi
+
+          # Write to file for the release body
+          echo "## What's Changed" > /tmp/changelog.md
+          echo "" >> /tmp/changelog.md
+          echo "$CHANGELOG" >> /tmp/changelog.md
+          echo "" >> /tmp/changelog.md
+          echo "## Docker Image" >> /tmp/changelog.md
+          echo "" >> /tmp/changelog.md
+          echo '```bash' >> /tmp/changelog.md
+          echo "docker pull ghcr.io/${{ github.repository }}:${CURRENT_TAG#v}" >> /tmp/changelog.md
+          echo '```' >> /tmp/changelog.md
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          body_path: /tmp/changelog.md
+          generate_release_notes: false

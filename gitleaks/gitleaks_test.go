@@ -52,11 +52,9 @@ func TestToSASTFinding_WithCommit(t *testing.T) {
 	if result.RuleID != "generic-api-key" {
 		t.Errorf("RuleID = %q, want %q", result.RuleID, "generic-api-key")
 	}
-	// Snippet is the raw match string (no redaction)
 	if result.Snippet != "api_key: AKIAIOSFODNN7EXAMPLE" {
 		t.Errorf("Snippet = %q, want %q", result.Snippet, "api_key: AKIAIOSFODNN7EXAMPLE")
 	}
-	// CommitSha should be mapped from finding's Commit field
 	if result.CommitSha != "abc123def456789" {
 		t.Errorf("CommitSha = %q, want %q", result.CommitSha, "abc123def456789")
 	}
@@ -76,7 +74,6 @@ func TestToSASTFinding_WithoutCommit(t *testing.T) {
 
 	result := toSASTFinding(f)
 
-	// Without commit, description should equal raw Description
 	if result.Description != "AWS Access Key" {
 		t.Errorf("Description = %q, want %q", result.Description, "AWS Access Key")
 	}
@@ -96,7 +93,6 @@ func TestToSASTFinding_ShortCommit(t *testing.T) {
 
 	result := toSASTFinding(f)
 
-	// Short commit should not be truncated
 	if result.Description != "Token (commit: abc123)" {
 		t.Errorf("Description = %q, want %q", result.Description, "Token (commit: abc123)")
 	}
@@ -113,23 +109,28 @@ func TestScanInvalidRepoPath(t *testing.T) {
 	}
 }
 
-func TestScanDetectsSecret(t *testing.T) {
-	// Create temp dir with a git repo containing a secret
-	dir := t.TempDir()
-	runGit := func(args ...string) {
+// initTestRepo creates a git repo with helper to run git commands and get SHAs.
+func initTestRepo(t *testing.T) (dir string, runGit func(args ...string) string) {
+	t.Helper()
+	dir = t.TempDir()
+	runGit = func(args ...string) string {
 		cmd := exec.Command("git", args...)
 		cmd.Dir = dir
 		out, err := cmd.CombinedOutput()
 		if err != nil {
 			t.Fatalf("git %v failed: %s\n%s", args, err, out)
 		}
+		return strings.TrimSpace(string(out))
 	}
-
 	runGit("init")
 	runGit("config", "user.email", "test@test.com")
 	runGit("config", "user.name", "Test")
+	return
+}
 
-	// Write file with AWS key pattern (high-entropy key required to pass gitleaks entropy filter)
+func TestScanDetectsSecret(t *testing.T) {
+	dir, runGit := initTestRepo(t)
+
 	secretFile := filepath.Join(dir, "config.env")
 	if err := os.WriteFile(secretFile, []byte("AWS_ACCESS_KEY_ID=AKIAZ7V5RCJQ42WRGX4D\n"), 0644); err != nil {
 		t.Fatalf("write secret file: %v", err)
@@ -137,18 +138,15 @@ func TestScanDetectsSecret(t *testing.T) {
 	runGit("add", ".")
 	runGit("commit", "-m", "add config")
 
-	// Run scan
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	findings, err := Scan(context.Background(), logger, dir, Options{})
 	if err != nil {
 		t.Fatalf("Scan() error: %v", err)
 	}
-
 	if len(findings) == 0 {
 		t.Fatal("expected at least 1 finding, got 0")
 	}
 
-	// Verify finding shape
 	f := findings[0]
 	if f.Severity != rediver.SeverityHigh {
 		t.Errorf("Severity = %q, want High", f.Severity)
@@ -162,8 +160,53 @@ func TestScanDetectsSecret(t *testing.T) {
 	if f.RuleID == "" {
 		t.Error("RuleID should not be empty")
 	}
-	// Snippet should contain the match context
 	if f.Snippet == "" {
 		t.Error("Snippet should not be empty")
+	}
+}
+
+func TestScanCommitRange(t *testing.T) {
+	dir, runGit := initTestRepo(t)
+
+	// Base commit — clean file, no secrets
+	if err := os.WriteFile(filepath.Join(dir, "clean.txt"), []byte("hello\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	runGit("add", ".")
+	runGit("commit", "-m", "base commit")
+	baseSHA := runGit("rev-parse", "HEAD")
+
+	// PR commit — introduces a secret
+	if err := os.WriteFile(filepath.Join(dir, "config.env"), []byte("AWS_ACCESS_KEY_ID=AKIAZ7V5RCJQ42WRGX4D\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	runGit("add", ".")
+	runGit("commit", "-m", "add secret")
+	headSHA := runGit("rev-parse", "HEAD")
+
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	// Scan with commit range (PR/MR mode) — should find the secret
+	findings, err := Scan(context.Background(), logger, dir, Options{
+		BaseCommitSHA: baseSHA,
+		HeadCommitSHA: headSHA,
+	})
+	if err != nil {
+		t.Fatalf("Scan() with commit range error: %v", err)
+	}
+	if len(findings) == 0 {
+		t.Fatal("expected at least 1 finding in commit range, got 0")
+	}
+
+	// Scan with same base and head — empty range, should find nothing
+	findingsClean, err := Scan(context.Background(), logger, dir, Options{
+		BaseCommitSHA: baseSHA,
+		HeadCommitSHA: baseSHA,
+	})
+	if err != nil {
+		t.Fatalf("Scan() empty range error: %v", err)
+	}
+	if len(findingsClean) != 0 {
+		t.Errorf("expected 0 findings for empty range, got %d", len(findingsClean))
 	}
 }

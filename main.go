@@ -11,7 +11,7 @@ import (
 	"github.com/joho/godotenv"
 )
 
-var Version = "0.2.0"
+var Version = "0.0.1"
 
 type CLI struct {
 	Url              string `help:"Rediver API URL" env:"REDIVER_URL" default:"https://api.rediver.ai" required:"true"`
@@ -22,6 +22,8 @@ type CLI struct {
 	RepoDir          string `help:"Override repository directory for scanning" env:"REPO_DIR"`
 	FullHistory      bool   `help:"Scan all git commits instead of only HEAD" env:"FULL_HISTORY" default:"false"`
 	Verbose          bool   `help:"Show verbose output from sca" env:"VERBOSE" default:"false"`
+	BaseCommit       string `help:"Base commit SHA for PR/MR diff scanning" env:"BASE_COMMIT"`
+	HeadCommit       string `help:"Head commit SHA for PR/MR diff scanning" env:"HEAD_COMMIT"`
 }
 
 func (cli *CLI) Run() error {
@@ -50,6 +52,8 @@ func (cli *CLI) Run() error {
 	if err := agent.Register(NewGitleaksScanner(GitleaksDefaults{
 		FullHistory: cli.FullHistory,
 		Verbose:     cli.Verbose,
+		BaseCommit:  cli.BaseCommit,
+		HeadCommit:  cli.HeadCommit,
 	})); err != nil {
 		return err
 	}

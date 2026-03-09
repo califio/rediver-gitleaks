@@ -21,9 +21,11 @@ func init() {
 
 // Options holds configuration for a gitleaks scan.
 type Options struct {
-	FullHistory bool
-	Verbose     bool
-	RedactPct   uint // percentage of secret to redact (0-100), 0 means no redaction
+	FullHistory   bool
+	Verbose       bool
+	RedactPct     uint   // percentage of secret to redact (0-100), 0 means no redaction
+	BaseCommitSHA string // PR/MR base commit — when set with HeadCommitSHA, scans only the diff range
+	HeadCommitSHA string // PR/MR head commit
 }
 
 // Scan runs gitleaks on the specified directory and returns SAST findings.
@@ -52,10 +54,19 @@ func Scan(ctx context.Context, log *slog.Logger, repoPath string, opts Options) 
 		detector.Redact = opts.RedactPct
 	}
 
-	// Default: scan only HEAD commit. Full history scans all commits.
-	logOpts := "-1"
-	if opts.FullHistory {
+	// Determine scan scope:
+	// 1. PR/MR diff range (base..head) takes priority when both commits are available
+	// 2. Full history scans all commits
+	// 3. Default: scan only HEAD commit
+	var logOpts string
+	switch {
+	case opts.BaseCommitSHA != "" && opts.HeadCommitSHA != "":
+		logOpts = fmt.Sprintf("%s..%s", opts.BaseCommitSHA, opts.HeadCommitSHA)
+		log.Info("scanning PR/MR commit range", "base", opts.BaseCommitSHA[:minLen(opts.BaseCommitSHA, 8)], "head", opts.HeadCommitSHA[:minLen(opts.HeadCommitSHA, 8)])
+	case opts.FullHistory:
 		logOpts = ""
+	default:
+		logOpts = "-1"
 	}
 	gitCmd, err := sources.NewGitLogCmdContext(ctx, absPath, logOpts)
 	if err != nil {
@@ -84,6 +95,13 @@ func Scan(ctx context.Context, log *slog.Logger, repoPath string, opts Options) 
 		results = append(results, toSASTFinding(f))
 	}
 	return results, nil
+}
+
+func minLen(s string, n int) int {
+	if len(s) < n {
+		return len(s)
+	}
+	return n
 }
 
 func toSASTFinding(f report.Finding) rediver.SASTFinding {
