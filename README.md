@@ -1,6 +1,7 @@
 # rediver-gitleaks
 
-Secret detection scanner for [Rediver](https://rediver.ai) powered by [gitleaks v8](https://github.com/zricethezav/gitleaks).
+[Rediver](https://rediver.ai) integration for [gitleaks](https://github.com/zricethezav/gitleaks).
+
 
 Scans git repositories for hardcoded secrets (API keys, tokens, passwords) and reports findings to the Rediver platform.
 
@@ -22,6 +23,13 @@ go install github.com/califio/rediver-gitleaks@latest
 
 REDIVER_TOKEN=your-cluster-token rediver-gitleaks
 ```
+
+## Getting REDIVER_TOKEN
+
+1. Log in to [Rediver](https://app.rediver.ai)
+2. Go to **Agent Clusters** page: `https://app.rediver.ai/tenant/{your-tenant}/agents`
+3. Create a new agent cluster (or select an existing one)
+4. Copy the generated token — this is your `REDIVER_TOKEN`
 
 ## Configuration
 
